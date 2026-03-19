@@ -1,23 +1,24 @@
+import os
+import sys
 import pandas as pd
 import numpy as np
 from scipy.stats import poisson
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
+sys.path.insert(0, os.path.dirname(__file__))
+
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'raw')
 
 CSV_FILES = [
-    'E0_2021.csv',
-    'E0_2122.csv',
-    'E0_2223.csv',
-    'E0_2324.csv',
-    'E0_2425.csv',
-    'E0_2526.csv',
+    'E0_2021.csv', 'E0_2122.csv', 'E0_2223.csv',
+    'E0_2324.csv', 'E0_2425.csv', 'E0_2526.csv',
 ]
 
 HOME_ADVANTAGE = 1.2
+XG_WEIGHT = 0.6
+GOALS_WEIGHT = 0.4
 
 
 def load_data():
@@ -30,9 +31,11 @@ def load_data():
         else:
             print(f"Warning: {f} not found, skipping")
     data = pd.concat(dfs, ignore_index=True)
-    data = data.dropna(subset=['FTHG', 'FTAG'])
+    data = data.dropna(subset=['FTHG', 'FTAG', 'HST', 'AST'])
     data['Date'] = pd.to_datetime(data['Date'], dayfirst=True)
     data = data.sort_values('Date').reset_index(drop=True)
+    data['xg_home'] = data['HST'] * 0.35
+    data['xg_away'] = data['AST'] * 0.35
     print(f"Loaded {len(data)} matches across all seasons")
     return data
 
@@ -40,8 +43,7 @@ def load_data():
 def time_decay_weights(dates, xi=0.0065):
     latest = dates.max()
     days_ago = (latest - dates).dt.days
-    weights = np.exp(-xi * days_ago)
-    return weights
+    return np.exp(-xi * days_ago)
 
 
 def calculate_team_ratings(data):
@@ -50,6 +52,8 @@ def calculate_team_ratings(data):
 
     avg_home_goals = np.average(data['FTHG'], weights=data['weight'])
     avg_away_goals = np.average(data['FTAG'], weights=data['weight'])
+    avg_home_xg = np.average(data['xg_home'], weights=data['weight'])
+    avg_away_xg = np.average(data['xg_away'], weights=data['weight'])
 
     teams = sorted(
         set(data['HomeTeam'].unique()) | set(data['AwayTeam'].unique())
@@ -61,27 +65,25 @@ def calculate_team_ratings(data):
         away_games = data[data['AwayTeam'] == team]
 
         if len(home_games) > 0:
-            home_attack = (
-                np.average(home_games['FTHG'], weights=home_games['weight'])
-                / avg_home_goals
-            )
-            home_defence = (
-                np.average(home_games['FTAG'], weights=home_games['weight'])
-                / avg_away_goals
-            )
+            w = home_games['weight']
+            goal_home_att = np.average(home_games['FTHG'], weights=w) / avg_home_goals
+            goal_home_def = np.average(home_games['FTAG'], weights=w) / avg_away_goals
+            xg_home_att = np.average(home_games['xg_home'], weights=w) / avg_home_xg
+            xg_home_def = np.average(home_games['xg_away'], weights=w) / avg_away_xg
+            home_attack = (XG_WEIGHT * xg_home_att) + (GOALS_WEIGHT * goal_home_att)
+            home_defence = (XG_WEIGHT * xg_home_def) + (GOALS_WEIGHT * goal_home_def)
         else:
             home_attack = 1.0
             home_defence = 1.0
 
         if len(away_games) > 0:
-            away_attack = (
-                np.average(away_games['FTAG'], weights=away_games['weight'])
-                / avg_away_goals
-            )
-            away_defence = (
-                np.average(away_games['FTHG'], weights=away_games['weight'])
-                / avg_home_goals
-            )
+            w = away_games['weight']
+            goal_away_att = np.average(away_games['FTAG'], weights=w) / avg_away_goals
+            goal_away_def = np.average(away_games['FTHG'], weights=w) / avg_home_goals
+            xg_away_att = np.average(away_games['xg_away'], weights=w) / avg_away_xg
+            xg_away_def = np.average(away_games['xg_home'], weights=w) / avg_home_xg
+            away_attack = (XG_WEIGHT * xg_away_att) + (GOALS_WEIGHT * goal_away_att)
+            away_defence = (XG_WEIGHT * xg_away_def) + (GOALS_WEIGHT * goal_away_def)
         else:
             away_attack = 1.0
             away_defence = 1.0
@@ -145,27 +147,25 @@ def predict_match(home_team, away_team, ratings, avg_home_goals, avg_away_goals,
 
 
 if __name__ == '__main__':
-    print("--- The Gaffer: Poisson Model ---\n")
+    print("--- The Gaffer: Poisson Model (xG Enhanced) ---\n")
 
     data = load_data()
-
-    print("Calculating team ratings...")
     ratings, avg_home, avg_away = calculate_team_ratings(data)
     print(f"Ratings calculated for {len(ratings)} teams\n")
 
-    print("Available teams:")
-    for t in sorted(ratings.keys()):
-        print(f"  {t}")
+    test_matches = [
+        ('Arsenal', 'Man City'),
+        ('Liverpool', 'Chelsea'),
+        ('Newcastle', 'Sunderland'),
+        ('Tottenham', "Nott'm Forest"),
+    ]
 
-    print("\n--- Test Prediction ---")
-    home = 'Arsenal'
-    away = 'Man City'
-
-    result = predict_match(home, away, ratings, avg_home, avg_away)
-
-    print(f"\n{home} vs {away}")
-    print(f"xG projection: {home} {result['xg_home']} — {away} {result['xg_away']}")
-    print(f"Outcome: {home} {result['home_win_pct']}% | Draw {result['draw_pct']}% | {away} {result['away_win_pct']}%")
-    print(f"\nTop 3 scorelines:")
-    for pick in result['top_3']:
-        print(f"  {home} {pick['home']}–{pick['away']} {away}: {pick['probability']}%")
+    for home, away in test_matches:
+        try:
+            result = predict_match(home, away, ratings, avg_home, avg_away)
+            print(f"{home} vs {away}")
+            print(f"  xG: {result['xg_home']} — {result['xg_away']}")
+            print(f"  Outcome: {home} {result['home_win_pct']}% | Draw {result['draw_pct']}% | {away} {result['away_win_pct']}%")
+            print(f"  Top pick: {home} {result['top_3'][0]['home']}–{result['top_3'][0]['away']} {away} ({result['top_3'][0]['probability']}%)\n")
+        except ValueError as e:
+            print(f"  Skipped: {e}\n")
