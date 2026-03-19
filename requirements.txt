@@ -1,0 +1,9 @@
+pandas
+numpy
+scipy
+catboost
+requests
+beautifulsoup4
+supabase
+python-dotenv
+apscheduler
