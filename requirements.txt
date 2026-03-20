@@ -7,3 +7,5 @@ beautifulsoup4
 supabase
 python-dotenv
 apscheduler
+scikit-learn
+groq
