@@ -20,15 +20,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run pre-kickoff update
+      - name: Run pre-kickoff lineup adjustment
         env:
           FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python scripts/lineup_adjustment.py
-```
-
-Save both files. Now you need to add your secrets to GitHub so the workflows can access your API keys. Go to:
-```
-https://github.com/Haikeysgit/gaffer-engine/settings/secrets/actions
