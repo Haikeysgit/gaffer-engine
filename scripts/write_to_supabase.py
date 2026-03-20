@@ -55,6 +55,98 @@ def write_prediction(prediction, fixture_id, home_team, away_team, kickoff_time,
     print(f"  xG: {home_team} {prediction['xg_home']} — {away_team} {prediction['xg_away']}\n")
 
 
+def log_match_performance():
+    print("--- Logging post-match performance ---")
+
+    response = supabase.table("gaffer_predictions")\
+        .select("*")\
+        .eq("lineup_adjusted", False)\
+        .execute()
+
+    predictions = response.data
+    if not predictions:
+        print("No predictions to check.")
+        return
+
+    import requests as req
+    headers = {"X-Auth-Token": os.getenv("FOOTBALL_DATA_API_KEY")}
+
+    for pred in predictions:
+        fixture_id = pred["fixture_id"]
+
+        if fixture_id.startswith("test_"):
+            continue
+
+        already_logged = supabase.table("gaffer_performance")\
+            .select("id")\
+            .eq("fixture_id", fixture_id)\
+            .execute()
+
+        if already_logged.data:
+            continue
+
+        url = f"https://api.football-data.org/v4/matches/{fixture_id}"
+        resp = req.get(url, headers=headers, timeout=10)
+
+        if resp.status_code != 200:
+            continue
+
+        match_data = resp.json()
+        status = match_data.get("status")
+
+        if status != "FINISHED":
+            continue
+
+        score = match_data.get("score", {}).get("fullTime", {})
+        actual_home = score.get("home")
+        actual_away = score.get("away")
+
+        if actual_home is None or actual_away is None:
+            continue
+
+        predicted_home = pred["top_pick_home"]
+        predicted_away = pred["top_pick_away"]
+
+        if actual_home > actual_away:
+            actual_outcome = "H"
+        elif actual_home < actual_away:
+            actual_outcome = "A"
+        else:
+            actual_outcome = "D"
+
+        if pred["home_win_pct"] > pred["draw_pct"] and pred["home_win_pct"] > pred["away_win_pct"]:
+            predicted_outcome = "H"
+        elif pred["away_win_pct"] > pred["draw_pct"] and pred["away_win_pct"] > pred["home_win_pct"]:
+            predicted_outcome = "A"
+        else:
+            predicted_outcome = "D"
+
+        outcome_correct = predicted_outcome == actual_outcome
+
+        home_prob = pred["home_win_pct"] / 100
+        draw_prob = pred["draw_pct"] / 100
+        away_prob = pred["away_win_pct"] / 100
+
+        if actual_outcome == "H":
+            brier = (1 - home_prob) ** 2 + draw_prob ** 2 + away_prob ** 2
+        elif actual_outcome == "D":
+            brier = home_prob ** 2 + (1 - draw_prob) ** 2 + away_prob ** 2
+        else:
+            brier = home_prob ** 2 + draw_prob ** 2 + (1 - away_prob) ** 2
+
+        performance_data = {
+            "fixture_id": fixture_id,
+            "predicted_top_pick": f"{predicted_home}-{predicted_away}",
+            "actual_result": f"{actual_home}-{actual_away}",
+            "outcome_correct": outcome_correct,
+            "brier_score": round(brier / 3, 4),
+            "gameweek": pred["gameweek"],
+        }
+
+        supabase.table("gaffer_performance").insert(performance_data).execute()
+        print(f"Logged: {pred['home_team']} vs {pred['away_team']} — predicted {predicted_outcome}, actual {actual_outcome}, correct: {outcome_correct}")
+
+
 if __name__ == "__main__":
     print("--- The Gaffer: Full Prediction Pipeline ---\n")
 
@@ -86,6 +178,15 @@ if __name__ == "__main__":
             continue
 
         prediction = predict_match(home_team, away_team, ratings, avg_home, avg_away)
-        write_prediction(prediction, fixture_id, home_team, away_team, kickoff_time, gameweek)
+        write_prediction(
+            prediction,
+            fixture_id,
+            home_team,
+            away_team,
+            kickoff_time,
+            gameweek,
+        )
 
-    print(f"Pipeline complete. {len(matches) - skipped} predictions saved, {skipped} skipped.")
+    print(f"\nPipeline complete. {len(matches) - skipped} predictions saved, {skipped} skipped.")
+    print("\nChecking for finished matches to log...")
+    log_match_performance()
